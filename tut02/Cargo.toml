@@ -1,5 +1,5 @@
 [package]
-name = "tut01"
+name = "tut02"
 version = "0.1.0"
 edition = "2018"
 
@@ -7,4 +7,4 @@ edition = "2018"
 
 [dependencies]
 winit = "0.26"
-erupt = "0.21"
+erupt = "0.21.0"
