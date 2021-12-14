@@ -2,9 +2,8 @@ use winit::event::{Event, WindowEvent};
 use winit::window::{Window, WindowBuilder};
 use winit::event_loop::{EventLoop, ControlFlow};
 
-use erupt::{vk, {EntryLoader, InstanceLoader}, utils::{surface}, vk1_0};
+use erupt::{vk, {EntryLoader, InstanceLoader}, utils::{surface}};
 use std::ffi::CString;
-use std::ptr;
 
 const HEIGHT: u32 = 512;
 const WIDTH: u32 = 512;
@@ -53,7 +52,7 @@ impl HelloTriangleApp {
 
     fn run(&self) {
         let (window, event_loop) = HelloTriangleApp::init_window();
-        let (entry, instance) = HelloTriangleApp::init_vulkan(&window);
+        let (_entry, instance) = HelloTriangleApp::init_vulkan(&window);
         HelloTriangleApp::main_loop(instance, window, event_loop);
     }
 
