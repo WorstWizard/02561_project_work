@@ -122,11 +122,7 @@ fn init_debug_messenger_info() -> vk::DebugUtilsMessengerCreateInfoEXTBuilder<'s
 
 fn main() {
     let (window, event_loop) = init_window();
-<<<<<<< HEAD
     let (_entry, instance, messenger) = init_vulkan(&window);
-=======
-    let (entry, instance, messenger) = init_vulkan(&window);
->>>>>>> 38c298b4ed0df823e01e81fe0a0eede672e6afd1
 
     //The event loop hijacks the main thread, so once it closes the entire program exits.
     //All cleanup operations should be handled either before the main loop, inside the mainloop,
