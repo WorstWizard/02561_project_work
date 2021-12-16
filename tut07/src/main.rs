@@ -173,8 +173,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
             let device_properties = unsafe{instance.get_physical_device_properties(*device)};
             let device_features = unsafe{instance.get_physical_device_features(*device)};
             println!("Device name: {}", unsafe{CStr::from_ptr(&(device_properties.device_name[0]) as *const c_char)}.to_string_lossy());
-            return device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
-                && device_features.geometry_shader == vk::TRUE
+            return device_features.geometry_shader == vk::TRUE
                 && check_device_extension_support(device, instance)
                 && if let Some(_) = find_queue_families(device, surface, instance) {true} else {false}
                 
