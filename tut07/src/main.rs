@@ -37,11 +37,13 @@ fn init_window() -> (Window, EventLoop<()>) {
     let window = WindowBuilder::new()
         .with_inner_size( winit::dpi::PhysicalSize::new(WIDTH, HEIGHT))
         .with_title(APP_TITLE)
+        .with_resizable(false)
         .build(&event_loop).expect("Window build failed!");
     (window, event_loop)
 }
 
 struct VulkanApp { //Members dropped in declared order. So they must be placed in opposite order of references
+    swapchain: vk::SwapchainKHR,
     device: Box<DeviceLoader>,
     surface: vk::SurfaceKHR,
     messenger: vk::DebugUtilsMessengerEXT,
@@ -125,11 +127,20 @@ fn init_vulkan(window: &Window) -> VulkanApp {
     //// Window surface creation
     let surface = unsafe { surface::create_surface(&instance, &window, None) }.unwrap();
 
-
     //// Physical device and queues
     const GRAPHICS_Q_IDX: usize = 0;
     const PRESENT_Q_IDX: usize = 1;
     const DEVICE_EXTS: [*const c_char; 1] = [vk::KHR_SWAPCHAIN_EXTENSION_NAME];
+
+    // Swapchain queries
+    fn query_swap_chain_support(device: &vk::PhysicalDevice, surface: &vk::SurfaceKHR, instance: &InstanceLoader)
+    -> (vk::SurfaceCapabilitiesKHR, Vec<vk::SurfaceFormatKHR>, Vec<vk::PresentModeKHR>) {
+            let surface_capabilities = unsafe {instance.get_physical_device_surface_capabilities_khr(*device, *surface)}.unwrap();
+            let formats = unsafe {instance.get_physical_device_surface_formats_khr(*device, *surface, None)}.unwrap();
+            let present_modes = unsafe {instance.get_physical_device_surface_present_modes_khr(*device, *surface, None)}.unwrap();
+            (surface_capabilities, formats.to_vec(), present_modes.to_vec())
+    }
+
     let (physical_device, queue_family_indices) = {
         fn find_queue_families(device: &vk::PhysicalDevice, surface: &vk::SurfaceKHR, instance: &InstanceLoader) -> Option<[u32; 2]> {
             let queue_family_properties = unsafe{instance.get_physical_device_queue_family_properties(*device, None)};
@@ -167,15 +178,20 @@ fn init_vulkan(window: &Window) -> VulkanApp {
             return true
         }
 
+        //Checking device suitability
         let devices = unsafe {instance.enumerate_physical_devices(None)}.unwrap();
         if devices.len() == 0 {panic!("No devices with Vulkan support!")}
         fn is_device_suitable(device: &vk::PhysicalDevice, surface: &vk::SurfaceKHR, instance: &InstanceLoader) -> bool {
             let device_properties = unsafe{instance.get_physical_device_properties(*device)};
             let device_features = unsafe{instance.get_physical_device_features(*device)};
-            println!("Device name: {}", unsafe{CStr::from_ptr(&(device_properties.device_name[0]) as *const c_char)}.to_string_lossy());
+            println!("Device name: {}", unsafe{CStr::from_ptr(device_properties.device_name.as_ptr())}.to_string_lossy());
+
+            if !check_device_extension_support(device, instance) {return false} //Must have extension to query swap chain
+            let (_, formats, present_modes) = query_swap_chain_support(device, surface, instance);
+
             return device_features.geometry_shader == vk::TRUE
-                && check_device_extension_support(device, instance)
                 && if let Some(_) = find_queue_families(device, surface, instance) {true} else {false}
+                && !formats.is_empty() && !present_modes.is_empty()
                 
         }
         fn rate_device_suitability(device_properties: &vk::PhysicalDeviceProperties, device_features: &vk::PhysicalDeviceFeatures) -> u32 {
@@ -186,6 +202,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
             return score
         }
     
+        //Picking device
         let physical_device = devices.into_iter().max_by_key(
             |device| {
                 let device_properties = unsafe{instance.get_physical_device_properties(*device)};
@@ -198,7 +215,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
         
         (physical_device, queue_family_indices)
     };
-    
+
     //// Logical device
     let unique_queue_family_indices: Vec<u32> = HashSet::from(queue_family_indices.clone()).into_iter().collect();
     let device_queue_infos: &[vk::DeviceQueueCreateInfoBuilder] = &unique_queue_family_indices.into_iter().map(|index| {
@@ -215,16 +232,83 @@ fn init_vulkan(window: &Window) -> VulkanApp {
     if VALIDATION_ENABLED {
         device_create_info = device_create_info.enabled_layer_names(&VALIDATION_LAYERS);
     }
-    let device = Box::new(unsafe{DeviceLoader::new(&instance, physical_device, &device_create_info)}.expect("Failed to create logical device!"));
+    let logical_device = Box::new(unsafe{DeviceLoader::new(&instance, physical_device, &device_create_info)}.expect("Failed to create logical device!"));
 
     //// Queue handles
-    let graphics_queue = unsafe{device.get_device_queue(queue_family_indices[GRAPHICS_Q_IDX], 0)};
-    let present_queue = unsafe{device.get_device_queue(queue_family_indices[PRESENT_Q_IDX], 0)};
+    let graphics_queue = unsafe{logical_device.get_device_queue(queue_family_indices[GRAPHICS_Q_IDX], 0)};
+    let present_queue = unsafe{logical_device.get_device_queue(queue_family_indices[PRESENT_Q_IDX], 0)};
+
+
+    //// Picking swapchain settings
+    fn choose_swap_surface_format(formats: &Vec<vk::SurfaceFormatKHR>) -> vk::SurfaceFormatKHR {
+        for available_format in formats {
+            if available_format.format == vk::Format::R8G8B8A8_SRGB && available_format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR_KHR {
+                return *available_format
+            }
+        }
+        return formats[0];
+    }
+    fn choose_swap_present_mode(present_modes: &Vec<vk::PresentModeKHR>) -> vk::PresentModeKHR {
+        for available_mode in present_modes {
+            if *available_mode == vk::PresentModeKHR::MAILBOX_KHR {
+                return *available_mode
+            }
+        }
+        return vk::PresentModeKHR::FIFO_KHR;
+    }
+    fn choose_swap_extent(capabilities: &vk::SurfaceCapabilitiesKHR, window: &Window) -> vk::Extent2D {
+        //If width/height of current extent is u32::MAX, the window manager allows selecting an extent different from the window resolution
+        if capabilities.current_extent.width != u32::MAX { //Extent is specified already, must use it
+            return capabilities.current_extent
+        } else {
+            let window_size = window.inner_size();
+            let mut actual_extent = vk::Extent2D{width: window_size.width, height: window_size.height};
+            actual_extent.width = actual_extent.width.clamp(capabilities.min_image_extent.width, capabilities.max_image_extent.width);
+            actual_extent.height = actual_extent.height.clamp(capabilities.min_image_extent.height, capabilities.max_image_extent.height);
+            return actual_extent;
+        }
+    }
+
+    //// Creating swapchain
+    let swapchain = {
+        let (surface_capabilities, formats, present_modes) = query_swap_chain_support(&physical_device, &surface, &instance);
+        let surface_format = choose_swap_surface_format(&formats);
+        let present_mode = choose_swap_present_mode(&present_modes);
+        let swap_extent = choose_swap_extent(&surface_capabilities, &window);
+        let image_count = {
+            let mut count = surface_capabilities.min_image_count + 1;
+            if surface_capabilities.min_image_count > 0 && count > surface_capabilities.max_image_count {count = surface_capabilities.max_image_count}
+            count
+        };
+        let mut swapchain_info = vk::SwapchainCreateInfoKHRBuilder::new()
+            .surface(surface)
+            .min_image_count(image_count)
+            .image_format(surface_format.format)
+            .image_color_space(surface_format.color_space)
+            .image_extent(swap_extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .composite_alpha(vk::CompositeAlphaFlagBitsKHR::OPAQUE_KHR)
+            .pre_transform(surface_capabilities.current_transform)
+            .present_mode(present_mode)
+            .clipped(true);
+        if queue_family_indices[GRAPHICS_Q_IDX] != queue_family_indices[PRESENT_Q_IDX] {
+            swapchain_info = swapchain_info.image_sharing_mode(vk::SharingMode::CONCURRENT).queue_family_indices(&queue_family_indices);
+        } else {
+            swapchain_info = swapchain_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
+        }
+
+        unsafe{logical_device.create_swapchain_khr(&swapchain_info, None)}.expect("Could not create swapchain!")
+    };
+
+    //// Swapchain images
+    let swapchain_images = unsafe {logical_device.get_swapchain_images_khr(swapchain, None)}.unwrap();
 
     VulkanApp {
         entry,
         instance,
-        device,
+        device: logical_device,
+        swapchain,
         messenger,
         surface,
     }
@@ -234,7 +318,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
 fn init_debug_messenger_info() -> vk::DebugUtilsMessengerCreateInfoEXTBuilder<'static> {
     let messenger_info = vk::DebugUtilsMessengerCreateInfoEXTBuilder::new()
     .message_severity(
-        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE_EXT |
+        //vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE_EXT |
         vk::DebugUtilsMessageSeverityFlagsEXT::WARNING_EXT |
         vk::DebugUtilsMessageSeverityFlagsEXT::ERROR_EXT
     )
