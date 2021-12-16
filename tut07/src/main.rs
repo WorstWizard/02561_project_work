@@ -270,7 +270,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
     }
 
     //// Creating swapchain
-    let swapchain = {
+    let (swapchain, image_format) = {
         let (surface_capabilities, formats, present_modes) = query_swap_chain_support(&physical_device, &surface, &instance);
         let surface_format = choose_swap_surface_format(&formats);
         let present_mode = choose_swap_present_mode(&present_modes);
@@ -297,11 +297,10 @@ fn init_vulkan(window: &Window) -> VulkanApp {
         } else {
             swapchain_info = swapchain_info.image_sharing_mode(vk::SharingMode::EXCLUSIVE);
         }
+        let swapchain = unsafe{logical_device.create_swapchain_khr(&swapchain_info, None)}.expect("Could not create swapchain!");
 
-        unsafe{logical_device.create_swapchain_khr(&swapchain_info, None)}.expect("Could not create swapchain!")
+        (swapchain, surface_format.format)
     };
-
-    //// Swapchain images
     let swapchain_images = unsafe {logical_device.get_swapchain_images_khr(swapchain, None)}.unwrap();
 
     VulkanApp {
