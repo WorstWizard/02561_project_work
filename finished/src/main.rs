@@ -123,7 +123,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
         return true
     }
 
-    if !check_validation_layer_support(&entry) {
+    if VALIDATION_ENABLED && !check_validation_layer_support(&entry) {
         panic!("Validation layer requested but not available!");
     }
 
