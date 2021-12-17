@@ -1,4 +1,4 @@
-use winit::event::{Event, WindowEvent};
+use winit::event::{Event, WindowEvent, VirtualKeyCode};
 use winit::window::{Window, WindowBuilder};
 use winit::event_loop::{EventLoop, ControlFlow};
 
@@ -648,6 +648,7 @@ fn main() {
     let mut timer = time::Instant::now();
     let speed = 0.1;
     let mut push_constants = [0.0];
+    let mut zooming = true;
 
     //The event loop hijacks the main thread, so once it closes the entire program exits.
     //All cleanup operations should be handled either before the main loop, inside the mainloop,
@@ -655,10 +656,24 @@ fn main() {
     event_loop.run(move |event,_,control_flow| {
         *control_flow = ControlFlow::Poll;
         match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested, ..
-            } => {
-                *control_flow = ControlFlow::Exit;
+            Event::WindowEvent{event, ..} => match event {
+                WindowEvent::CloseRequested => {
+                    *control_flow = ControlFlow::Exit;
+                },
+                WindowEvent::KeyboardInput{input,..} => {
+                    match input.virtual_keycode {
+                        Some(VirtualKeyCode::Space) => {
+                            if input.state == winit::event::ElementState::Pressed {
+                                zooming = !zooming;
+                            }
+                        },
+                        Some(VirtualKeyCode::Escape) => {
+                            *control_flow = ControlFlow::Exit;
+                        }
+                        _ => (),
+                    }
+                },
+                _ => (),
             },
             Event::MainEventsCleared => { //Main body
                 //If drawing continously, put rendering code here directly
@@ -684,23 +699,25 @@ fn main() {
                 // The image is now being used by this frame
                 vulkan_app.images_in_flight[image_index as usize] = vulkan_app.in_flight_fences[current_frame];
 
-                let time_delta = timer.elapsed();
-                push_constants[0] = (push_constants[0] + time_delta.as_secs_f32()*speed) % 2.0;//(2.0*3.1415926535);
-
                 //Reallocate to get the new push constants in, lazy mans method
-                let amount = vulkan_app.command_buffers.len();
-                unsafe {vulkan_app.device.free_command_buffers(vulkan_app.command_pool, &vulkan_app.command_buffers)};
-                vulkan_app.command_buffers = allocate_and_record_command_buffers(
-                    amount as u32,
-                    vulkan_app.command_pool,
-                    &vulkan_app.device,
-                    vulkan_app.swapchain_extent,
-                    &vulkan_app.framebuffers,
-                    vulkan_app.renderpass,
-                    vulkan_app.graphics_pipeline,
-                    vulkan_app.graphics_pipeline_layout,
-                    &push_constants
-                );
+                if zooming {
+                    let time_delta = timer.elapsed();
+                    push_constants[0] = (push_constants[0] + time_delta.as_secs_f32()*speed) % 2.0;//(2.0*3.1415926535);
+
+                    let amount = vulkan_app.command_buffers.len();
+                    unsafe {vulkan_app.device.free_command_buffers(vulkan_app.command_pool, &vulkan_app.command_buffers)};
+                    vulkan_app.command_buffers = allocate_and_record_command_buffers(
+                        amount as u32,
+                        vulkan_app.command_pool,
+                        &vulkan_app.device,
+                        vulkan_app.swapchain_extent,
+                        &vulkan_app.framebuffers,
+                        vulkan_app.renderpass,
+                        vulkan_app.graphics_pipeline,
+                        vulkan_app.graphics_pipeline_layout,
+                        &push_constants
+                    );    
+                }
 
                 let wait_sems = [vulkan_app.image_available_sems[current_frame]];
                 let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
