@@ -1,0 +1,31 @@
+let buffer_size = 1*size_of::<f32>();
+let mut uniform_buffers = SmallVec::with_capacity(1);
+let mut uniform_buffers_memory = SmallVec::with_capacity(1);
+let buffer_info = vk::BufferCreateInfoBuilder::new()
+    .size(buffer_size as vk::DeviceSize)
+    .usage(vk::BufferUsageFlags::UNIFORM_BUFFER)
+    .sharing_mode(vk::SharingMode::EXCLUSIVE);
+let buffer = unsafe {logical_device.create_buffer(&buffer_info, None)}.unwrap();
+let memory_requirements = unsafe {logical_device.get_buffer_memory_requirements(buffer)};
+let mem_type = {
+    let memory_properties = unsafe {instance.get_physical_device_memory_properties(physical_device)};
+    let mut out = 0;
+    let mut found_mem = false;
+    for i in 0..memory_properties.memory_type_count {
+        if (memory_requirements.memory_type_bits & (1 << i)) != 0 && !(memory_properties.memory_types[i as usize].property_flags & (vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)).is_empty() {
+            out = i;
+            found_mem = true;
+            break;
+        }
+    }
+    if found_mem {panic!("Memory type not found!")}
+    out
+};
+let alloc_info = vk::MemoryAllocateInfoBuilder::new()
+    .allocation_size(memory_requirements.size)
+    .memory_type_index(mem_type);
+let buffer_memory = unsafe {logical_device.allocate_memory(&alloc_info, None)}.unwrap();
+unsafe {logical_device.bind_buffer_memory(buffer, buffer_memory, 0)}.unwrap();
+
+uniform_buffers.push(buffer);
+uniform_buffers_memory.push(buffer_memory);

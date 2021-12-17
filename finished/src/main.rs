@@ -3,13 +3,16 @@ use winit::window::{Window, WindowBuilder};
 use winit::event_loop::{EventLoop, ControlFlow};
 
 use erupt::{vk, {EntryLoader, InstanceLoader, DeviceLoader}, {ExtendableFrom, SmallVec}, utils::{surface}, cstr};
+
 use std::ffi::{CString, CStr};
 use std::os::raw::{c_char, c_void};
 use std::collections::HashSet;
+use std::mem::size_of;
+use std::time;
 
 const HEIGHT: u32 = 800;
 const WIDTH: u32 = 800;
-const APP_TITLE: &str = "HelloTriangle";
+const APP_TITLE: &str = "Mandelbrot in Vulkan - Kristian Knudsen";
 
 
 // Shaders
@@ -61,6 +64,7 @@ struct VulkanApp { //Members dropped in declared order. So they must be placed i
     graphics_pipeline: vk::Pipeline,
     image_views: Vec<vk::ImageView>,
     swapchain: vk::SwapchainKHR,
+    swapchain_extent: vk::Extent2D,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
     device: Box<DeviceLoader>,
@@ -362,6 +366,9 @@ fn init_vulkan(window: &Window) -> VulkanApp {
         image_views.push(image_view);
     }
 
+    //// Push constants
+    let push_constants = [1.0];
+
     //// Graphics pipeline
     let (graphics_pipeline, graphics_pipeline_layout, renderpass) = {
         // Render pass
@@ -462,7 +469,12 @@ fn init_vulkan(window: &Window) -> VulkanApp {
             .attachments(&pipeline_color_blend_attachment_states);
         
         // Pipeline layout
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfoBuilder::new();
+        let push_constant_ranges = [vk::PushConstantRangeBuilder::new()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size((push_constants.len()*size_of::<f32>()) as u32)];
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfoBuilder::new()
+            .push_constant_ranges(&push_constant_ranges);
         let pipeline_layout = unsafe {logical_device.create_pipeline_layout(&pipeline_layout_info, None)}.unwrap();
         
         let graphics_pipeline_infos = [vk::GraphicsPipelineCreateInfoBuilder::new()
@@ -509,42 +521,17 @@ fn init_vulkan(window: &Window) -> VulkanApp {
         .queue_family_index(queue_family_indices[GRAPHICS_Q_IDX]);
     let command_pool = unsafe {logical_device.create_command_pool(&command_pool_info, None)}.expect("Could not create command pool!");
 
-    let command_buffer_allocate_info = vk::CommandBufferAllocateInfoBuilder::new()
-        .command_pool(command_pool)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(swapchain_framebuffers.len() as u32);
-    let command_buffers = unsafe {logical_device.allocate_command_buffers(&command_buffer_allocate_info)}.expect("Could not create command buffers!");
-
-    for i in 0..command_buffers.len() {
-        //Begin recording command buffer
-        let command_buffer_begin_info = vk::CommandBufferBeginInfoBuilder::new();
-        unsafe {logical_device.begin_command_buffer(command_buffers[i], &command_buffer_begin_info)}.expect("Could not begin command buffer recording!");
-
-        //Start render pass
-        let render_area = vk::Rect2DBuilder::new()
-            .offset(vk::Offset2D{x: 0, y: 0})
-            .extent(swapchain_extent);
-        let mut clear_color = [vk::ClearValue::default()]; clear_color[0].color.float32 = [0.0, 0.0, 0.0, 1.0];
-        let renderpass_begin_info = vk::RenderPassBeginInfoBuilder::new()
-            .render_pass(renderpass)
-            .framebuffer(swapchain_framebuffers[i])
-            .render_area(*render_area)
-            .clear_values(&clear_color);
-        unsafe {logical_device.cmd_begin_render_pass(command_buffers[i], &renderpass_begin_info, vk::SubpassContents::INLINE)};
-
-        //Drawing commands
-        unsafe {
-            logical_device.cmd_bind_pipeline(command_buffers[i], vk::PipelineBindPoint::GRAPHICS, graphics_pipeline);
-            logical_device.cmd_draw(command_buffers[i], 4, 1, 0, 0);
-            //In order: vertexCount, instanceCount, firstVertex, firstInstance
-        }
-
-        //End the render pass and end recording
-        unsafe {
-            logical_device.cmd_end_render_pass(command_buffers[i]);    
-            logical_device.end_command_buffer(command_buffers[i]).expect("Failed recording command buffer!");
-        }
-    }
+    let command_buffers = allocate_and_record_command_buffers(
+        swapchain_images.len() as u32,
+        command_pool,
+        &logical_device,
+        swapchain_extent,
+        &swapchain_framebuffers,
+        renderpass,
+        graphics_pipeline,
+        graphics_pipeline_layout,
+        &push_constants
+    );
 
     //// Create semaphores for in-render-pass synchronization
     let mut image_available_sems = SmallVec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -571,6 +558,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
         graphics_queue,
         present_queue,
         swapchain,
+        swapchain_extent,
         image_views,
         graphics_pipeline,
         graphics_pipeline_layout,
@@ -584,7 +572,6 @@ fn init_vulkan(window: &Window) -> VulkanApp {
         images_in_flight,
     }
 }
-
 
 fn init_debug_messenger_info() -> vk::DebugUtilsMessengerCreateInfoEXTBuilder<'static> {
     let messenger_info = vk::DebugUtilsMessengerCreateInfoEXTBuilder::new()
@@ -602,16 +589,71 @@ fn init_debug_messenger_info() -> vk::DebugUtilsMessengerCreateInfoEXTBuilder<'s
     messenger_info
 }
 
+fn allocate_and_record_command_buffers(
+    amount: u32,
+    command_pool: vk::CommandPool,
+    logical_device: &DeviceLoader,
+    swapchain_extent: vk::Extent2D,
+    swapchain_framebuffers: &Vec<vk::Framebuffer>,
+    renderpass: vk::RenderPass,
+    graphics_pipeline: vk::Pipeline,
+    graphics_pipeline_layout: vk::PipelineLayout,
+    push_constants: &[f32; 1]
+) -> SmallVec<vk::CommandBuffer> {
+
+    let command_buffer_allocate_info = vk::CommandBufferAllocateInfoBuilder::new()
+        .command_pool(command_pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(amount);
+    let command_buffers = unsafe {logical_device.allocate_command_buffers(&command_buffer_allocate_info)}.expect("Could not create command buffers!");
+
+    for i in 0..command_buffers.len() {
+        //Begin recording command buffer
+        let command_buffer_begin_info = vk::CommandBufferBeginInfoBuilder::new();
+        unsafe {logical_device.begin_command_buffer(command_buffers[i], &command_buffer_begin_info)}.expect("Could not begin command buffer recording!");
+
+        //Start render pass
+        let render_area = vk::Rect2DBuilder::new()
+            .offset(vk::Offset2D{x: 0, y: 0})
+            .extent(swapchain_extent);
+        let mut clear_color = [vk::ClearValue::default()]; clear_color[0].color.float32 = [0.0, 0.0, 0.0, 1.0];
+        let renderpass_begin_info = vk::RenderPassBeginInfoBuilder::new()
+            .render_pass(renderpass)
+            .framebuffer(swapchain_framebuffers[i])
+            .render_area(*render_area)
+            .clear_values(&clear_color);
+        unsafe {logical_device.cmd_begin_render_pass(command_buffers[i], &renderpass_begin_info, vk::SubpassContents::INLINE)};
+
+        //Drawing commands
+        unsafe {
+            logical_device.cmd_bind_pipeline(command_buffers[i], vk::PipelineBindPoint::GRAPHICS, graphics_pipeline);
+            logical_device.cmd_push_constants(command_buffers[i], graphics_pipeline_layout, vk::ShaderStageFlags::VERTEX,0, (push_constants.len()*size_of::<f32>()) as u32, push_constants.as_ptr() as *const c_void);
+            logical_device.cmd_draw(command_buffers[i], 4, 1, 0, 0);
+            //In order: vertexCount, instanceCount, firstVertex, firstInstance
+        }
+
+        //End the render pass and end recording
+        unsafe {
+            logical_device.cmd_end_render_pass(command_buffers[i]);    
+            logical_device.end_command_buffer(command_buffers[i]).expect("Failed recording command buffer!");
+        }
+    }
+    return command_buffers;
+}
+
 fn main() {
     let (window, event_loop) = init_window();
     let mut vulkan_app = init_vulkan(&window);
     let mut current_frame = 0;
+    let mut timer = time::Instant::now();
+    let speed = 0.1;
+    let mut push_constants = [0.0];
 
     //The event loop hijacks the main thread, so once it closes the entire program exits.
     //All cleanup operations should be handled either before the main loop, inside the mainloop,
     //or in the drop function of any data moved into the closure
     event_loop.run(move |event,_,control_flow| {
-        *control_flow = ControlFlow::Wait;
+        *control_flow = ControlFlow::Poll;
         match event {
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested, ..
@@ -620,10 +662,6 @@ fn main() {
             },
             Event::MainEventsCleared => { //Main body
                 //If drawing continously, put rendering code here directly
-
-                //window.request_redraw() //Call if state changed and a redraw is necessary
-            },
-            Event::RedrawRequested(_) => { //Conditionally redraw (OS might request this too)
 
                 let wait_fences = [vulkan_app.in_flight_fences[current_frame]];
                 unsafe {vulkan_app.device.wait_for_fences(&wait_fences, true, u64::MAX)}.unwrap();
@@ -644,8 +682,25 @@ fn main() {
                     unsafe {vulkan_app.device.wait_for_fences(&wait_fences, true, u64::MAX)}.unwrap();
                 }
                 // The image is now being used by this frame
-                // This one line is the only reason vulkan_app must be mutable, would be nice to change it
                 vulkan_app.images_in_flight[image_index as usize] = vulkan_app.in_flight_fences[current_frame];
+
+                let time_delta = timer.elapsed();
+                push_constants[0] = (push_constants[0] + time_delta.as_secs_f32()*speed) % 2.0;//(2.0*3.1415926535);
+
+                //Reallocate to get the new push constants in, lazy mans method
+                let amount = vulkan_app.command_buffers.len();
+                unsafe {vulkan_app.device.free_command_buffers(vulkan_app.command_pool, &vulkan_app.command_buffers)};
+                vulkan_app.command_buffers = allocate_and_record_command_buffers(
+                    amount as u32,
+                    vulkan_app.command_pool,
+                    &vulkan_app.device,
+                    vulkan_app.swapchain_extent,
+                    &vulkan_app.framebuffers,
+                    vulkan_app.renderpass,
+                    vulkan_app.graphics_pipeline,
+                    vulkan_app.graphics_pipeline_layout,
+                    &push_constants
+                );
 
                 let wait_sems = [vulkan_app.image_available_sems[current_frame]];
                 let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -656,7 +711,7 @@ fn main() {
                     .wait_dst_stage_mask(&wait_stages)
                     .command_buffers(&cmd_buffers)
                     .signal_semaphores(&signal_sems)];
-                
+                //println!("updated constant to {}", vulkan_app.push_constants[0]);
                 unsafe {
                     vulkan_app.device.reset_fences(&wait_fences).unwrap();
                     vulkan_app.device.queue_submit(vulkan_app.graphics_queue, &submits, vulkan_app.in_flight_fences[current_frame]).expect("Queue submission failed!");
@@ -671,7 +726,14 @@ fn main() {
                     .image_indices(&image_indices);
                 unsafe {vulkan_app.device.queue_present_khr(vulkan_app.present_queue, &present_info)}.expect("Presenting to queue failed!");
 
+                timer = time::Instant::now(); //Reset timer after frame is presented
+
                 current_frame = current_frame % MAX_FRAMES_IN_FLIGHT;
+
+                //window.request_redraw() //Call if state changed and a redraw is necessary
+            },
+            Event::RedrawRequested(_) => { //Conditionally redraw (OS might request this too)
+
             },
             Event::LoopDestroyed => {
                 println!("Exiting event loop, should drop application");
