@@ -128,7 +128,7 @@ fn init_vulkan(window: &Window) -> VulkanApp {
     }
 
     //// Application info
-    let app_name = CString::new("Hello Triangle").unwrap();
+    let app_name = CString::new("Mandelbrot by Kristian Knudsen").unwrap();
     let engine_name = CString::new("No Engine").unwrap();
 
     let app_info = vk::ApplicationInfoBuilder::new()
@@ -669,7 +669,7 @@ fn main() {
                         },
                         Some(VirtualKeyCode::Escape) => {
                             *control_flow = ControlFlow::Exit;
-                        }
+                        },
                         _ => (),
                     }
                 },
@@ -681,7 +681,7 @@ fn main() {
                 let wait_fences = [vulkan_app.in_flight_fences[current_frame]];
                 unsafe {vulkan_app.device.wait_for_fences(&wait_fences, true, u64::MAX)}.unwrap();
 
-                // Acquire index of image from the swapchain, signal semaphore once finishe
+                // Acquire index of image from the swapchain, signal semaphore once finished
                 let image_index = unsafe {
                     vulkan_app.device.acquire_next_image_khr(
                         vulkan_app.swapchain,
@@ -702,7 +702,7 @@ fn main() {
                 //Reallocate to get the new push constants in, lazy mans method
                 if zooming {
                     let time_delta = timer.elapsed();
-                    push_constants[0] = (push_constants[0] + time_delta.as_secs_f32()*speed) % 2.0;//(2.0*3.1415926535);
+                    push_constants[0] = (push_constants[0] + time_delta.as_secs_f32()*speed) % 2.0;
 
                     let amount = vulkan_app.command_buffers.len();
                     unsafe {vulkan_app.device.free_command_buffers(vulkan_app.command_pool, &vulkan_app.command_buffers)};
@@ -757,7 +757,7 @@ fn main() {
                 unsafe {
                     vulkan_app.device.device_wait_idle().unwrap(); //App referred to in closure, it is dropped once the scope closes
                 }
-            }
+            },
             _ => ()
         }
     });
